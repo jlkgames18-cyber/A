@@ -23,7 +23,7 @@ SCREENSHOTS_DIR = '/tmp/screenshots'
 
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
-ADMIN_PASSWORD = "changeme123"   # ← غيرها
+ADMIN_PASSWORD = "6776"   # ← غيرها
 
 IMAGE_CHUNKS = {}
 
